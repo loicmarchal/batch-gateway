@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   verify-tag-on-main:
@@ -73,6 +74,23 @@ jobs:
 
       - name: Package binaries as tar.gz (preserves execute bit on extract)
         run: make package-release
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: '3.16.4'
+
+      - name: Install yq
+        uses: frenck/action-setup-yq@v1.0.2
+        with:
+          version: v4.52.4
+
+      - name: Package and publish Helm chart
+        env:
+          VERSION: ${{ github.ref_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: make publish-helm-chart
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
