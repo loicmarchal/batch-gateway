@@ -188,6 +188,8 @@ apiserver:
     readTimeoutSeconds: 900
     writeTimeoutSeconds: 120
     idleTimeoutSeconds: 90
+    apiShutdownTimeoutSeconds: 60
+    observabilityShutdownTimeoutSeconds: 60
     batchAPI:
       eventTTLSeconds: 2592000
       passThroughHeaders: []

@@ -230,14 +230,16 @@ func (s *Server) Start(ctx context.Context) error {
 		logger.Info("shutting down", "reason", ctx.Err())
 
 		// Gracefully shutdown both servers
-		sdApiCtx, cancelApi := context.WithTimeout(context.Background(), 60*time.Second)
+		apiSd := time.Duration(s.config.GetAPIShutdownTimeoutSeconds()) * time.Second
+		sdApiCtx, cancelApi := context.WithTimeout(context.Background(), apiSd)
 		defer cancelApi()
 
 		if err := httpserver.Shutdown(sdApiCtx); err != nil {
 			logger.Error(err, "failed to gracefully shutdown API server")
 		}
 
-		sdObsCtx, cancelObs := context.WithTimeout(context.Background(), 60*time.Second)
+		obsSd := time.Duration(s.config.GetObservabilityShutdownTimeoutSeconds()) * time.Second
+		sdObsCtx, cancelObs := context.WithTimeout(context.Background(), obsSd)
 		defer cancelObs()
 
 		if err := obsServer.Shutdown(sdObsCtx); err != nil {
