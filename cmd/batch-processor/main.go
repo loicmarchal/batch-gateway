@@ -94,7 +94,7 @@ func run() error {
 	logger.V(logging.INFO).Info("Metrics initialized", "numWorkers", cfg.NumWorkers)
 
 	// setup context with graceful shutdown
-	ctx, cancel := interrupt.ContextWithSignal(ctx)
+	ctx, cancel := interrupt.ContextWithSignal(ctx, 0)
 	defer cancel()
 
 	// readiness starts as false and flips right before entering polling loop execution.

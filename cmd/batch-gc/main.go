@@ -25,6 +25,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/go-logr/logr"
 	"k8s.io/klog/v2"
@@ -65,7 +66,8 @@ func run() error {
 
 	logger.Info("Starting batch garbage collector", "dryRun", cfg.DryRun, "interval", cfg.Interval)
 
-	ctx, cancel := interrupt.ContextWithSignal(ctx)
+	const shutdownGrace = 5 * time.Second
+	ctx, cancel := interrupt.ContextWithSignal(ctx, shutdownGrace)
 	defer cancel()
 
 	var filesClient fsapi.BatchFilesClient

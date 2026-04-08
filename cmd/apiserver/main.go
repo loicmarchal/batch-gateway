@@ -49,7 +49,7 @@ func run() error {
 	}
 
 	// graceful shutdown
-	ctx, cancel := interrupt.ContextWithSignal(ctx)
+	ctx, cancel := interrupt.ContextWithSignal(ctx, 0)
 	defer cancel()
 
 	// initialize OpenTelemetry tracing
