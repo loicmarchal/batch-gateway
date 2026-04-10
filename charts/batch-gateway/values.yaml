@@ -97,7 +97,7 @@ apiserver:
   enabled: true
   replicaCount: 1
   terminationGracePeriodSeconds: 120
-  
+
   image:
     repository: ghcr.io/llm-d-incubation/batch-gateway-apiserver
     pullPolicy: Always
