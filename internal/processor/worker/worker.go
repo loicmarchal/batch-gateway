@@ -37,13 +37,33 @@ import (
 	"github.com/llm-d-incubation/batch-gateway/pkg/clients/inference"
 )
 
+// endpointLimit pairs an adaptive semaphore with its AIMD controller for a
+// single inference endpoint. Models sharing the same endpoint share one
+// endpointLimit, so a 429 from endpoint A only reduces concurrency for
+// models routed to A.
+type endpointLimit struct {
+	sem   *semaphore.AdaptiveSemaphore
+	aimd  *semaphore.AIMDController
+	label string // human-readable endpoint identifier for metrics/logs
+}
+
 type Processor struct {
 	cfg    *config.ProcessorConfig
 	tokens semaphore.Semaphore
 	wg     sync.WaitGroup
 
 	// globalSem limits total in-flight inference requests across all workers.
+	// Fixed capacity — serves as a ceiling only.
 	globalSem semaphore.Semaphore
+
+	// endpointLimits maps each unique InferenceClient to its per-endpoint
+	// adaptive semaphore + AIMD controller. Created in Run() from the
+	// resolver's client set.
+	//
+	// IMPORTANT: map keys rely on concrete client identity (pointer-equal
+	// InferenceClient instances). This is safe because GatewayResolver deduplicates
+	// and reuses concrete clients for identical endpoint configs.
+	endpointLimits map[inference.InferenceClient]*endpointLimit
 
 	poller  *Poller
 	updater *StatusUpdater
@@ -51,10 +71,6 @@ type Processor struct {
 	event     db.BatchEventChannelClient // cancel-event subscription
 	inference *inference.GatewayResolver // model → gateway routing
 	files     *fileManager
-
-	// guardCallback is called when any semaphore detects a double-release.
-	// Set during Run(); passed to per-model semaphores in processModel.
-	guardCallback func()
 }
 
 func NewProcessor(
@@ -65,8 +81,8 @@ func NewProcessor(
 	if cfg.NumWorkers <= 0 {
 		return nil, fmt.Errorf("worker semaphore (NumWorkers=%d): %w", cfg.NumWorkers, semaphore.ErrCap)
 	}
-	if cfg.GlobalConcurrency <= 0 {
-		return nil, fmt.Errorf("global semaphore (GlobalConcurrency=%d): %w", cfg.GlobalConcurrency, semaphore.ErrCap)
+	if cfg.Concurrency.Global <= 0 {
+		return nil, fmt.Errorf("global semaphore (concurrency.global=%d): %w", cfg.Concurrency.Global, semaphore.ErrCap)
 	}
 	poller := NewPoller(clients.Queue, clients.BatchDB)
 	updater := NewStatusUpdater(clients.BatchDB, clients.Status, cfg.ProgressTTLSeconds)
@@ -118,16 +134,54 @@ func (p *Processor) Run(ctx context.Context, onReady func()) error {
 	if err != nil {
 		return fmt.Errorf("worker semaphore (NumWorkers=%d): %w", p.cfg.NumWorkers, err)
 	}
-	p.globalSem, err = semaphore.New(p.cfg.GlobalConcurrency, makeGuard("global-concurrency"))
+	cc := &p.cfg.Concurrency
+	p.globalSem, err = semaphore.New(cc.Global, makeGuard("global-concurrency"))
 	if err != nil {
-		return fmt.Errorf("global semaphore (GlobalConcurrency=%d): %w", p.cfg.GlobalConcurrency, err)
+		return fmt.Errorf("global semaphore (concurrency.global=%d): %w", cc.Global, err)
 	}
-	p.guardCallback = makeGuard("per-model-concurrency")
 
+	clients := p.inference.Clients()
+	p.endpointLimits = make(map[inference.InferenceClient]*endpointLimit, len(clients))
+	for _, client := range clients {
+		epLabel := p.inference.ClientLabel(client)
+		epSem, epErr := semaphore.NewAdaptive(cc.PerEndpoint, makeGuard("endpoint-concurrency"))
+		if epErr != nil {
+			return fmt.Errorf("endpoint semaphore (concurrency.per_endpoint=%d): %w", cc.PerEndpoint, epErr)
+		}
+		var epAIMD *semaphore.AIMDController
+		if cc.AIMD.Enabled {
+			epAIMD = semaphore.NewAIMDController(
+				semaphore.AIMDConfig{
+					MinLimit:         cc.AIMD.Min,
+					MaxLimit:         cc.PerEndpoint,
+					BackoffFactor:    cc.AIMD.BackoffFactor,
+					AdditiveIncrease: cc.AIMD.AdditiveIncrease,
+				},
+				cc.PerEndpoint,
+				func(limit int) { epSem.SetLimit(limit) },
+				logger.WithValues("endpoint", epLabel),
+			)
+			metrics.SetAIMDConcurrencyLimit(epLabel, float64(cc.PerEndpoint))
+		}
+		p.endpointLimits[client] = &endpointLimit{sem: epSem, aimd: epAIMD, label: epLabel}
+	}
+	const highCardinalityThreshold = 50
+	if cc.AIMD.Enabled && len(clients) > highCardinalityThreshold {
+		logger.Info("AIMD metrics may cause high cardinality: "+
+			"each endpoint creates up to 5 time series (1 gauge + 1 increase counter + 3 decrease counters by signal); "+
+			"verify your TSDB can handle the load or reduce the number of distinct gateway endpoints in config",
+			"num_endpoints", len(clients),
+			"estimated_series", len(clients)*5,
+		)
+	}
 	logger.V(logging.INFO).Info(
 		"Processor run started",
 		"loopInterval", p.cfg.PollInterval,
 		"maxWorkers", p.cfg.NumWorkers,
+		"concurrency.global", cc.Global,
+		"concurrency.per_endpoint", cc.PerEndpoint,
+		"concurrency.aimd.enabled", cc.AIMD.Enabled,
+		"num_endpoints", len(clients),
 	)
 
 	return p.runPollingLoop(pollingCtx, ctx)

@@ -16,10 +16,15 @@ e2e_latency_bucket:
   count: 12
 
 # Concurrency Control
-global_concurrency: 100
-per_model_max_concurrency: 10
-# Maximum number of concurrent job recoveries during startup
-recovery_max_concurrency: 5
+concurrency:
+  global: 100              # Fixed ceiling for total in-flight requests
+  per_endpoint: 10         # Initial/max concurrency per inference endpoint
+  recovery: 5              # Max concurrent job recoveries during startup
+  aimd:
+    enabled: true          # Set to false to disable adaptive concurrency
+    min: 5                 # AIMD floor per endpoint
+    backoff_factor: 0.5    # Multiplicative decrease on 429/5xx (must be in (0,1))
+    additive_increase: 1   # Slots added per successful window
 
 # Metrics & Health Check Server Address - ":PORT" format (e.g. ":9090")
 addr: ":9090"
